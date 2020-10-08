@@ -1,5 +1,5 @@
 # include "Event.cuh"
-
+#include "cuda_rt_call.h"
 
 const unsigned int N_MAX_HITS_PER_MODULE = 100;
 const unsigned int N_MAX_MD_PER_MODULES = 100;
@@ -161,13 +161,14 @@ void SDL::Event::createMiniDoublets()
 
     unsigned int nLowerModules = *modulesInGPU->nLowerModules;
 
-//    dim3 nThreads(1,16,16);
-//    dim3 nBlocks((nLowerModules % nThreads.x == 0 ? nLowerModules/nThreads.x : nLowerModules/nThreads.x + 1),(N_MAX_HITS_PER_MODULE % nThreads.y == 0 ? N_MAX_HITS_PER_MODULE/nThreads.y : N_MAX_HITS_PER_MODULE/nThreads.y + 1), (N_MAX_HITS_PER_MODULE % nThreads.z == 0 ? N_MAX_HITS_PER_MODULE/nThreads.z : N_MAX_HITS_PER_MODULE/nThreads.z + 1));
-    //std::cout<<nBlocks.x<<" "<<nBlocks.y<<" "<<nBlocks.z<<" "<<std::endl;
-
+#ifdef NESTED_PARA
     int nThreads = 1;
     int nBlocks = nLowerModules % nThreads == 0 ? nLowerModules/nThreads : nLowerModules/nThreads + 1;
-
+#else
+    dim3 nThreads(1,16,16);
+    dim3 nBlocks((nLowerModules % nThreads.x == 0 ? nLowerModules/nThreads.x : nLowerModules/nThreads.x + 1),(N_MAX_HITS_PER_MODULE % nThreads.y == 0 ? N_MAX_HITS_PER_MODULE/nThreads.y : N_MAX_HITS_PER_MODULE/nThreads.y + 1), (N_MAX_HITS_PER_MODULE % nThreads.z == 0 ? N_MAX_HITS_PER_MODULE/nThreads.z : N_MAX_HITS_PER_MODULE/nThreads.z + 1));
+    std::cout<<nBlocks.x<<" "<<nBlocks.y<<" "<<nBlocks.z<<" "<<std::endl;
+#endif
     cudaDeviceSynchronize();
     auto syncStart = std::chrono::high_resolution_clock::now();
 
@@ -198,11 +199,13 @@ void SDL::Event::createSegmentsWithModuleMap()
     }
     unsigned int nLowerModules = *modulesInGPU->nLowerModules;
 
-//    dim3 nThreads(1,16,16);
-//    dim3 nBlocks(((nLowerModules * MAX_CONNECTED_MODULES)  % nThreads.x == 0 ? (nLowerModules * MAX_CONNECTED_MODULES)/nThreads.x : (nLowerModules * MAX_CONNECTED_MODULES)/nThreads.x + 1),(N_MAX_MD_PER_MODULES % nThreads.y == 0 ? N_MAX_MD_PER_MODULES/nThreads.y : N_MAX_MD_PER_MODULES/nThreads.y + 1), (N_MAX_MD_PER_MODULES % nThreads.z == 0 ? N_MAX_MD_PER_MODULES/nThreads.z : N_MAX_MD_PER_MODULES/nThreads.z + 1));
-
+#ifdef NESTED_PARA
     unsigned int nThreads = 1;
     unsigned int nBlocks = nLowerModules % nThreads == 0 ? nLowerModules/nThreads : nLowerModules/nThreads + 1;
+#else
+    dim3 nThreads(1,16,16);
+    dim3 nBlocks(((nLowerModules * MAX_CONNECTED_MODULES)  % nThreads.x == 0 ? (nLowerModules * MAX_CONNECTED_MODULES)/nThreads.x : (nLowerModules * MAX_CONNECTED_MODULES)/nThreads.x + 1),(N_MAX_MD_PER_MODULES % nThreads.y == 0 ? N_MAX_MD_PER_MODULES/nThreads.y : N_MAX_MD_PER_MODULES/nThreads.y + 1), (N_MAX_MD_PER_MODULES % nThreads.z == 0 ? N_MAX_MD_PER_MODULES/nThreads.z : N_MAX_MD_PER_MODULES/nThreads.z + 1));
+#endif
 
     createSegmentsInGPU<<<nBlocks,nThreads>>>(*modulesInGPU, *hitsInGPU, *mdsInGPU, *segmentsInGPU);
 
@@ -214,8 +217,29 @@ void SDL::Event::createSegmentsWithModuleMap()
     addSegmentsToEvent();
 
 }
+#ifdef NESTED_PARA
+__global__ void createMiniDoubletsInGPU(struct SDL::modules& modulesInGPU, struct SDL::hits& hitsInGPU, struct SDL::miniDoublets& mdsInGPU)
+{
+  int lowerModuleArrayIndex = blockIdx.x * blockDim.x + threadIdx.x;
+  if(lowerModuleArrayIndex >= (*modulesInGPU.nLowerModules)) return; //extra precaution
 
-/*__global__ void createMiniDoubletsInGPU(struct SDL::modules& modulesInGPU, struct SDL::hits& hitsInGPU, struct SDL::miniDoublets& mdsInGPU)
+  int lowerModuleIndex = modulesInGPU.lowerModuleIndices[lowerModuleArrayIndex];
+  int upperModuleIndex = modulesInGPU.partnerModuleIndex(lowerModuleIndex);
+
+  if(modulesInGPU.hitRanges[lowerModuleIndex * 2] == -1) return;
+  if(modulesInGPU.hitRanges[upperModuleIndex * 2] == -1) return;
+
+  unsigned int nLowerHits = modulesInGPU.hitRanges[lowerModuleIndex * 2 + 1] - modulesInGPU.hitRanges[lowerModuleIndex * 2] + 1;
+  unsigned int nUpperHits = modulesInGPU.hitRanges[upperModuleIndex * 2 + 1] - modulesInGPU.hitRanges[upperModuleIndex * 2] + 1;
+
+  dim3 nThreads(1,16,16);
+  dim3 nBlocks(1,nLowerHits % nThreads.y == 0 ? nLowerHits/nThreads.y : nLowerHits/nThreads.y + 1, nUpperHits % nThreads.z == 0 ? nUpperHits/nThreads.z : nUpperHits/nThreads.z + 1);
+
+  createMiniDoubletsFromLowerModule<<<nBlocks,nThreads>>>(modulesInGPU, hitsInGPU, mdsInGPU, lowerModuleIndex, upperModuleIndex, nLowerHits, nUpperHits);
+}
+
+#else
+__global__ void createMiniDoubletsInGPU(struct SDL::modules& modulesInGPU, struct SDL::hits& hitsInGPU, struct SDL::miniDoublets& mdsInGPU)
 {
     int lowerModuleArrayIndex = blockIdx.x * blockDim.x + threadIdx.x;
     int lowerHitIndex = blockIdx.y * blockDim.y + threadIdx.y;
@@ -247,7 +271,8 @@ void SDL::Event::createSegmentsWithModuleMap()
 
         addMDToMemory(mdsInGPU,hitsInGPU, modulesInGPU, lowerHitArrayIndex, upperHitArrayIndex, lowerModuleIndex, dz, dphi, dphichange, shiftedX, shiftedY, shiftedZ, noShiftedDz, noShiftedDphi, noShiftedDphiChange, mdIndex);
     }
-}*/
+}
+#endif
 
 __global__ void createMiniDoubletsFromLowerModule(struct SDL::modules& modulesInGPU, struct SDL::hits& hitsInGPU, struct SDL::miniDoublets& mdsInGPU, unsigned int lowerModuleIndex, unsigned int upperModuleIndex, unsigned int nLowerHits, unsigned int nUpperHits)
 {
@@ -274,30 +299,24 @@ __global__ void createMiniDoubletsFromLowerModule(struct SDL::modules& modulesIn
     }
 }
 
-
-__global__ void createMiniDoubletsInGPU(struct SDL::modules& modulesInGPU, struct SDL::hits& hitsInGPU, struct SDL::miniDoublets& mdsInGPU)
+#ifdef NESTED_PARA
+__global__ void createSegmentsInGPU(struct SDL::modules& modulesInGPU, struct SDL::hits& hitsInGPU, struct SDL::miniDoublets& mdsInGPU, struct SDL::segments& segmentsInGPU)
 {
-    int lowerModuleArrayIndex = blockIdx.x * blockDim.x + threadIdx.x;
-    if(lowerModuleArrayIndex >= (*modulesInGPU.nLowerModules)) return; //extra precaution
-
-    int lowerModuleIndex = modulesInGPU.lowerModuleIndices[lowerModuleArrayIndex];
-    int upperModuleIndex = modulesInGPU.partnerModuleIndex(lowerModuleIndex);
-
-    if(modulesInGPU.hitRanges[lowerModuleIndex * 2] == -1) return;
-    if(modulesInGPU.hitRanges[upperModuleIndex * 2] == -1) return;
-
-    unsigned int nLowerHits = modulesInGPU.hitRanges[lowerModuleIndex * 2 + 1] - modulesInGPU.hitRanges[lowerModuleIndex * 2] + 1;
-    unsigned int nUpperHits = modulesInGPU.hitRanges[upperModuleIndex * 2 + 1] - modulesInGPU.hitRanges[upperModuleIndex * 2] + 1;
-
-    dim3 nThreads(1,16,16);
-    dim3 nBlocks(1,nLowerHits % nThreads.y == 0 ? nLowerHits/nThreads.y : nLowerHits/nThreads.y + 1, nUpperHits % nThreads.z == 0 ? nUpperHits/nThreads.z : nUpperHits/nThreads.z + 1);
-
-    createMiniDoubletsFromLowerModule<<<nBlocks,nThreads>>>(modulesInGPU, hitsInGPU, mdsInGPU, lowerModuleIndex, upperModuleIndex, nLowerHits, nUpperHits);
-
+  int innerLowerModuleArrayIndex = blockIdx.x * blockDim.x + threadIdx.x;
+  if(innerLowerModuleArrayIndex >= *modulesInGPU.nLowerModules) return;
+  unsigned int innerLowerModuleIndex = modulesInGPU.lowerModuleIndices[innerLowerModuleArrayIndex];
+  unsigned int nConnectedModules = modulesInGPU.nConnectedModules[innerLowerModuleIndex];
+  if(nConnectedModules == 0) return;
+  unsigned int nInnerMDs = mdsInGPU.nMDs[innerLowerModuleIndex];
+  if(nInnerMDs == 0) return;
+  dim3 nThreads(1,16,16);
+  dim3 nBlocks((nConnectedModules % nThreads.x == 0 ? nConnectedModules/nThreads.x : nConnectedModules/nThreads.x + 1), (nInnerMDs % nThreads.y == 0 ? nInnerMDs/nThreads.y : nInnerMDs/nThreads.y + 1), (N_MAX_MD_PER_MODULES % nThreads.z == 0 ? N_MAX_MD_PER_MODULES/nThreads.z : N_MAX_MD_PER_MODULES/nThreads.z + 1));
+  createSegmentsFromInnerLowerModule<<<nBlocks,nThreads>>>(modulesInGPU, hitsInGPU, mdsInGPU, segmentsInGPU, innerLowerModuleIndex,nInnerMDs);
 
 }
 
-/*__global__ void createSegmentsInGPU(struct SDL::modules& modulesInGPU, struct SDL::hits& hitsInGPU, struct SDL::miniDoublets& mdsInGPU, struct SDL::segments& segmentsInGPU)
+#else
+__global__ void createSegmentsInGPU(struct SDL::modules& modulesInGPU, struct SDL::hits& hitsInGPU, struct SDL::miniDoublets& mdsInGPU, struct SDL::segments& segmentsInGPU)
 {
     int xAxisIdx = blockIdx.x * blockDim.x + threadIdx.x;
     int innerMDArrayIdx = blockIdx.y * blockDim.y + threadIdx.y;
@@ -343,8 +362,8 @@ __global__ void createMiniDoubletsInGPU(struct SDL::modules& modulesInGPU, struc
     }
 
 
-}*/
-
+}
+#endif
 
 __global__ void createSegmentsFromInnerLowerModule(struct SDL::modules&modulesInGPU, struct SDL::hits& hitsInGPU, struct SDL::miniDoublets& mdsInGPU, struct SDL::segments& segmentsInGPU, unsigned int innerLowerModuleIndex, unsigned int nInnerMDs)
 {
@@ -381,22 +400,6 @@ __global__ void createSegmentsFromInnerLowerModule(struct SDL::modules&modulesIn
     }
 
 }
-
-__global__ void createSegmentsInGPU(struct SDL::modules& modulesInGPU, struct SDL::hits& hitsInGPU, struct SDL::miniDoublets& mdsInGPU, struct SDL::segments& segmentsInGPU)
-{
-    int innerLowerModuleArrayIndex = blockIdx.x * blockDim.x + threadIdx.x;
-    if(innerLowerModuleArrayIndex >= *modulesInGPU.nLowerModules) return;
-    unsigned int innerLowerModuleIndex = modulesInGPU.lowerModuleIndices[innerLowerModuleArrayIndex];
-    unsigned int nConnectedModules = modulesInGPU.nConnectedModules[innerLowerModuleIndex];
-    if(nConnectedModules == 0) return;
-    unsigned int nInnerMDs = mdsInGPU.nMDs[innerLowerModuleIndex];
-    if(nInnerMDs == 0) return;
-    dim3 nThreads(1,16,16);
-    dim3 nBlocks((nConnectedModules % nThreads.x == 0 ? nConnectedModules/nThreads.x : nConnectedModules/nThreads.x + 1), (nInnerMDs % nThreads.y == 0 ? nInnerMDs/nThreads.y : nInnerMDs/nThreads.y + 1), (N_MAX_MD_PER_MODULES % nThreads.z == 0 ? N_MAX_MD_PER_MODULES/nThreads.z : N_MAX_MD_PER_MODULES/nThreads.z + 1));
-    createSegmentsFromInnerLowerModule<<<nBlocks,nThreads>>>(modulesInGPU, hitsInGPU, mdsInGPU, segmentsInGPU, innerLowerModuleIndex,nInnerMDs);
-
-}
-
 
 unsigned int SDL::Event::getNumberOfHits()
 {
