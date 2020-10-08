@@ -148,22 +148,27 @@ void SDL::Event::addSegmentsToEvent()
 
 void SDL::Event::createMiniDoublets()
 {
+#ifdef TIMER
     cudaDeviceSynchronize();
     auto memStart = std::chrono::high_resolution_clock::now();
+#endif
     if(mdsInGPU == nullptr)
     {
         cudaMallocManaged(&mdsInGPU, sizeof(SDL::miniDoublets));
     	createMDsInUnifiedMemory(*mdsInGPU, N_MAX_MD_PER_MODULES, nModules);
     }
+#ifdef TIMER
     cudaDeviceSynchronize();
     auto memStop = std::chrono::high_resolution_clock::now();
     auto memDuration = std::chrono::duration_cast<std::chrono::milliseconds>(memStop - memStart); //in milliseconds
     std::cout<<"memory allocation took "<<memDuration.count()<<" ms"<<std::endl;
-
+#endif
     unsigned int nLowerModules = *modulesInGPU->nLowerModules;
 
+#ifdef TIMER
     cudaDeviceSynchronize();
     auto syncStart = std::chrono::high_resolution_clock::now();
+#endif
 #ifdef NESTED_PARA
     int nThreads = 1;
     int nBlocks = nLowerModules % nThreads == 0 ? nLowerModules/nThreads : nLowerModules/nThreads + 1;
@@ -184,6 +189,7 @@ void SDL::Event::createMiniDoublets()
 
 
     cudaError_t cudaerr = cudaDeviceSynchronize();
+#ifdef TIMER
     auto syncStop = std::chrono::high_resolution_clock::now();
 
     auto syncDuration =  std::chrono::duration_cast<std::chrono::milliseconds>(syncStop - syncStart);
@@ -193,7 +199,7 @@ void SDL::Event::createMiniDoublets()
     {
         std::cout<<"sync failed with error : "<<cudaGetErrorString(cudaerr)<<std::endl;
     }
-
+#endif
     addMiniDoubletsToEvent();
 
 
