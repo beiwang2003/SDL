@@ -5,6 +5,7 @@ const unsigned int N_MAX_HITS_PER_MODULE = 100;
 const unsigned int N_MAX_MD_PER_MODULES = 100;
 const unsigned int N_MAX_SEGMENTS_PER_MODULE = 600; //WHY!
 const unsigned int MAX_CONNECTED_MODULES = 40;
+const unsigned int SHAREDMEMSIZE = 64;
 
 struct SDL::modules* SDL::modulesInGPU = nullptr;
 unsigned int SDL::nModules;
@@ -161,18 +162,26 @@ void SDL::Event::createMiniDoublets()
 
     unsigned int nLowerModules = *modulesInGPU->nLowerModules;
 
+    cudaDeviceSynchronize();
+    auto syncStart = std::chrono::high_resolution_clock::now();
 #ifdef NESTED_PARA
     int nThreads = 1;
     int nBlocks = nLowerModules % nThreads == 0 ? nLowerModules/nThreads : nLowerModules/nThreads + 1;
+    createMiniDoubletsInGPU<<<nBlocks,nThreads>>>(*modulesInGPU,*hitsInGPU,*mdsInGPU);
 #else
     dim3 nThreads(1,16,16);
     dim3 nBlocks((nLowerModules % nThreads.x == 0 ? nLowerModules/nThreads.x : nLowerModules/nThreads.x + 1),(N_MAX_HITS_PER_MODULE % nThreads.y == 0 ? N_MAX_HITS_PER_MODULE/nThreads.y : N_MAX_HITS_PER_MODULE/nThreads.y + 1), (N_MAX_HITS_PER_MODULE % nThreads.z == 0 ? N_MAX_HITS_PER_MODULE/nThreads.z : N_MAX_HITS_PER_MODULE/nThreads.z + 1));
     std::cout<<nBlocks.x<<" "<<nBlocks.y<<" "<<nBlocks.z<<" "<<std::endl;
-#endif
-    cudaDeviceSynchronize();
-    auto syncStart = std::chrono::high_resolution_clock::now();
-
+    int blocksize = nThreads.x*nThreads.y*nThreads.z;
+    //int blocksize = SHAREDMEMSIZE;
+    int shared_buffer = blocksize*(3*sizeof(unsigned int)+sizeof(short)+9*sizeof(float));
+#ifdef SHARED_MEM
+    createMiniDoubletsInGPU<<<nBlocks,nThreads,shared_buffer>>>(*modulesInGPU,*hitsInGPU,*mdsInGPU);
+#else
     createMiniDoubletsInGPU<<<nBlocks,nThreads>>>(*modulesInGPU,*hitsInGPU,*mdsInGPU);
+#endif
+#endif
+
 
     cudaError_t cudaerr = cudaDeviceSynchronize();
     auto syncStop = std::chrono::high_resolution_clock::now();
@@ -239,6 +248,138 @@ __global__ void createMiniDoubletsInGPU(struct SDL::modules& modulesInGPU, struc
 }
 
 #else
+#ifdef SHARED_MEM
+__global__ void createMiniDoubletsInGPU(struct SDL::modules& modulesInGPU, struct SDL::hits& hitsInGPU, struct SDL::miniDoublets& mdsInGPU)
+{
+  int lowerModuleArrayIndex = blockIdx.x * blockDim.x + threadIdx.x;
+  int lowerHitIndex = blockIdx.y * blockDim.y + threadIdx.y;
+  int upperHitIndex = blockIdx.z * blockDim.z + threadIdx.z;
+  int blocksize = blockDim.x*blockDim.y*blockDim.z;
+  //int blocksize = SHAREDMEMSIZE;
+  int blockID = threadIdx.x*blockDim.y*blockDim.z + threadIdx.z*blockDim.y + threadIdx.y;
+
+  extern __shared__ int shared_buffer[];
+  __shared__ int mMDcount_s;
+  __shared__ int mdIndex_s;
+  unsigned int *hitInd_s = (unsigned int*)shared_buffer;
+  unsigned int *lowerModuleInd_s = (unsigned int*)&hitInd_s[2*blocksize];
+  float *dz_s = (float *)&hitInd_s[3*blocksize];
+  float *dphi_s = (float *)&dz_s[blocksize];
+  float *dphichange_s = (float *)&dz_s[2*blocksize];
+  float *shiftedX_s = (float *)&dz_s[3*blocksize];
+  float *shiftedY_s = (float *)&dz_s[4*blocksize];
+  float *shiftedZ_s = (float *)&dz_s[5*blocksize];
+  float *noShiftedDz_s = (float *)&dz_s[6*blocksize];
+  float *noShiftedDphi_s = (float *)&dz_s[7*blocksize];
+  float *noShiftedDphiChange_s = (float *)&dz_s[8*blocksize];
+  short *pixelModuleFlag_s = (short *)&noShiftedDphiChange_s[blocksize];
+
+  if(lowerModuleArrayIndex < (*modulesInGPU.nLowerModules)) {
+    int lowerModuleIndex = modulesInGPU.lowerModuleIndices[lowerModuleArrayIndex];
+    int upperModuleIndex = modulesInGPU.partnerModuleIndex(lowerModuleIndex);
+
+    if ((modulesInGPU.hitRanges[lowerModuleIndex * 2] != -1) && (modulesInGPU.hitRanges[upperModuleIndex * 2] != -1)) {
+
+      unsigned int nLowerHits = modulesInGPU.hitRanges[lowerModuleIndex * 2 + 1] - modulesInGPU.hitRanges[lowerModuleIndex * 2] + 1;
+      unsigned int nUpperHits = modulesInGPU.hitRanges[upperModuleIndex * 2 + 1] - modulesInGPU.hitRanges[upperModuleIndex * 2] + 1;
+
+      if (threadIdx.x==0&&threadIdx.y==0&&threadIdx.z==0) mMDcount_s=0;
+      __syncthreads();
+
+      bool success=false;
+      unsigned int lowerHitArrayIndex, upperHitArrayIndex;
+      float dz, dphi, dphichange, shiftedX, shiftedY, shiftedZ, noShiftedDz, noShiftedDphi, noShiftedDphiChange;
+      unsigned int mdModuleIndex, mdIndex, mdIndexBlock;
+      //consider assigining a dummy computation function for these
+      if((lowerHitIndex < nLowerHits) && (upperHitIndex < nUpperHits)) {
+
+	lowerHitArrayIndex = modulesInGPU.hitRanges[lowerModuleIndex * 2] + lowerHitIndex;
+	upperHitArrayIndex = modulesInGPU.hitRanges[upperModuleIndex * 2] + upperHitIndex;
+
+	success = runMiniDoubletDefaultAlgo(modulesInGPU, hitsInGPU, lowerModuleIndex, lowerHitArrayIndex, upperHitArrayIndex, dz, dphi, dphichange, shiftedX, shiftedY, shiftedZ, noShiftedDz, noShiftedDphi, noShiftedDphiChange);
+	/*
+	if(success)
+	  {
+	  mdModuleIndex = atomicAdd(&mdsInGPU.nMDs[lowerModuleIndex],1);
+	  mdIndex = lowerModuleIndex * N_MAX_MD_PER_MODULES + mdModuleIndex;
+	  addMDToMemory(mdsInGPU,hitsInGPU, modulesInGPU, lowerHitArrayIndex, upperHitArrayIndex, lowerModuleIndex, dz, dphi, dphichange, shiftedX, shiftedY, shiftedZ, noShiftedDz, noShiftedDphi, noShiftedDphiChange, mdIndex);
+	  }
+	*/
+
+	if (success)
+	  {
+	    mdIndexBlock = atomicAdd(&mMDcount_s,1);
+
+	    hitInd_s[mdIndexBlock*2] = lowerHitArrayIndex;
+	    hitInd_s[mdIndexBlock*2+1] = upperHitArrayIndex;
+	    lowerModuleInd_s[mdIndexBlock] = lowerModuleIndex;
+	    if(modulesInGPU.moduleType[lowerModuleIndex] == SDL::PS)
+	      {
+		if(modulesInGPU.moduleLayerType[lowerModuleIndex] == SDL::Pixel)
+		  {
+		    pixelModuleFlag_s[mdIndexBlock] = 0;
+		  }
+		else
+		  {
+		    pixelModuleFlag_s[mdIndexBlock] = 1;
+		  }
+	      }
+	    else
+	      {
+		pixelModuleFlag_s[mdIndexBlock] = -1;
+	      }
+	    dz_s[mdIndexBlock] = dz;
+	    dphichange_s[mdIndexBlock] = dphichange;
+	    dphi_s[mdIndexBlock] = dphi;
+
+	    shiftedX_s[mdIndexBlock] = shiftedX;
+	    shiftedY_s[mdIndexBlock] = shiftedY;
+	    shiftedZ_s[mdIndexBlock] = shiftedZ;
+
+	    noShiftedDz_s[mdIndexBlock] = noShiftedDz;
+	    noShiftedDphi_s[mdIndexBlock] = noShiftedDphi;
+	    noShiftedDphiChange_s[mdIndexBlock] = noShiftedDphiChange;
+	  } // end success
+      }
+      __syncthreads();
+
+      if (threadIdx.x==0&&threadIdx.y==0&&threadIdx.z==0) {
+	if (mMDcount_s>0) {
+	  mdIndex_s = lowerModuleIndex * N_MAX_MD_PER_MODULES + atomicAdd(&mdsInGPU.nMDs[lowerModuleIndex], mMDcount_s);
+	}
+      }
+      __syncthreads();
+
+      //if(success) addMDToMemory(mdsInGPU,hitsInGPU, modulesInGPU, lowerHitArrayIndex, upperHitArrayIndex, lowerModuleIndex, dz, dphi, dphichange, shiftedX, shiftedY, shiftedZ, noShiftedDz, noShiftedDphi, noShiftedDphiChange, mdIndex_s+mdIndexBlock);
+
+      // copy minidouble info in shared memory to global memory
+      if (blockID<mMDcount_s) {
+	mdModuleIndex = mdIndex_s + blockID;
+	mdsInGPU.hitIndices[2*mdModuleIndex] = hitInd_s[2*blockID];
+	mdsInGPU.hitIndices[2*mdModuleIndex + 1] = hitInd_s[2*blockID+1];
+	mdsInGPU.moduleIndices[mdModuleIndex] = lowerModuleInd_s[blockID];
+
+	mdsInGPU.pixelModuleFlag[mdModuleIndex] = pixelModuleFlag_s[blockID];
+
+	mdsInGPU.dzs[mdModuleIndex] = dz_s[blockID];
+	mdsInGPU.dphichanges[mdModuleIndex] = dphichange_s[blockID];
+	mdsInGPU.dphis[mdModuleIndex] = dphi_s[blockID];
+
+	mdsInGPU.shiftedXs[mdModuleIndex] = shiftedX_s[blockID];
+	mdsInGPU.shiftedYs[mdModuleIndex] = shiftedY_s[blockID];
+	mdsInGPU.shiftedZs[mdModuleIndex] = shiftedZ_s[blockID];
+
+	mdsInGPU.noShiftedDzs[mdModuleIndex] = noShiftedDz_s[blockID];
+	mdsInGPU.noShiftedDphis[mdModuleIndex] = noShiftedDphi_s[blockID];
+	mdsInGPU.noShiftedDphiChanges[mdModuleIndex] = noShiftedDphiChange_s[blockID];
+      }
+      __syncthreads();
+    }
+  }
+}
+
+
+#else
 __global__ void createMiniDoubletsInGPU(struct SDL::modules& modulesInGPU, struct SDL::hits& hitsInGPU, struct SDL::miniDoublets& mdsInGPU)
 {
     int lowerModuleArrayIndex = blockIdx.x * blockDim.x + threadIdx.x;
@@ -272,6 +413,7 @@ __global__ void createMiniDoubletsInGPU(struct SDL::modules& modulesInGPU, struc
         addMDToMemory(mdsInGPU,hitsInGPU, modulesInGPU, lowerHitArrayIndex, upperHitArrayIndex, lowerModuleIndex, dz, dphi, dphichange, shiftedX, shiftedY, shiftedZ, noShiftedDz, noShiftedDphi, noShiftedDphiChange, mdIndex);
     }
 }
+#endif
 #endif
 
 __global__ void createMiniDoubletsFromLowerModule(struct SDL::modules& modulesInGPU, struct SDL::hits& hitsInGPU, struct SDL::miniDoublets& mdsInGPU, unsigned int lowerModuleIndex, unsigned int upperModuleIndex, unsigned int nLowerHits, unsigned int nUpperHits)

@@ -13,11 +13,11 @@ LIB=sdl.so
 # AMD Opteron and Intel EM64T (64 bit mode) Linux with gcc 3.x
 #CXX           = g++4 
 CXX           = nvcc
-CXXFLAGS      =  -g --compiler-options -Wall --compiler-options -Wshadow --compiler-options -Woverloaded-virtual --compiler-options -fPIC --compiler-options -fopenmp -dc -lineinfo --ptxas-options=-v --maxrregcount 32 -arch=compute_60 --cudart shared -DCACHE_ALLOC -DNESTED_PARA
+CXXFLAGS      =  -g --compiler-options -Wall --compiler-options -Wshadow --compiler-options -Woverloaded-virtual --compiler-options -fPIC --compiler-options -fopenmp -dc -lineinfo --ptxas-options=-v --maxrregcount 32 -arch=compute_60 --cudart shared -DCACHE_ALLOC -DSHARED_MEM #-DNESTED_PARA
 #LD            = g++4 
 LD            = nvcc 
 #LDFLAGS       = -g -O2
-SOFLAGS       = -g -shared --compiler-options -fPIC -arch=compute_60 --cudart shared -DCACHE_ALLOC -DNESTED_PARA
+SOFLAGS       = -g -shared --compiler-options -fPIC -arch=compute_60 --cudart shared -DCACHE_ALLOC -DSHARED_MEM #-DNESTED_PARA
 # how to make it 
 #
 
