@@ -13,7 +13,7 @@ SDL::Event::Event()
 {
     hitsInGPU = nullptr;
     mdsInGPU = nullptr;
-    segmentsInGPU = nullptr; 
+    segmentsInGPU = nullptr;
     //reset the arrays
     for(int i = 0; i<6; i++)
     {
@@ -36,7 +36,7 @@ SDL::Event::~Event()
     cudaFree(mdsInGPU);
     hitsInGPU->freeMemory();
     cudaFree(hitsInGPU);
-    segmentsInGPU->freeMemory(); 
+    segmentsInGPU->freeMemory();
     cudaFree(segmentsInGPU);
 }
 
@@ -48,6 +48,12 @@ void SDL::initModules()
         loadModulesFromFile(*modulesInGPU,nModules); //nModules gets filled here
     }
     resetObjectRanges(*modulesInGPU,nModules);
+}
+
+void SDL::cleanModules()
+{
+  freeModulesInUnifiedMemory(*modulesInGPU);
+  cudaFree(modulesInGPU);
 }
 
 void SDL::Event::resetObjectsInModule()
@@ -78,7 +84,7 @@ void SDL::Event::addHitToEvent(float x, float y, float z, unsigned int detId)
     else
     {
         n_hits_by_layer_endcap_[moduleLayer-1]++;
-    } 
+    }
 
 }
 
@@ -97,7 +103,7 @@ void SDL::Event::addMiniDoubletsToEvent()
         {
             modulesInGPU->mdRanges[idx * 2] = idx * N_MAX_MD_PER_MODULES;
             modulesInGPU->mdRanges[idx * 2 + 1] = (idx * N_MAX_MD_PER_MODULES) + mdsInGPU->nMDs[idx] - 1;
-     
+
             if(modulesInGPU->subdets[idx] == Barrel)
             {
                 n_minidoublets_by_layer_barrel_[modulesInGPU->layers[idx] -1] += mdsInGPU->nMDs[idx];
@@ -175,9 +181,9 @@ void SDL::Event::createMiniDoublets()
 
     if(cudaerr != cudaSuccess)
     {
-        std::cout<<"sync failed with error : "<<cudaGetErrorString(cudaerr)<<std::endl;    
+        std::cout<<"sync failed with error : "<<cudaGetErrorString(cudaerr)<<std::endl;
     }
-    
+
     addMiniDoubletsToEvent();
 
 
@@ -195,7 +201,7 @@ void SDL::Event::createSegmentsWithModuleMap()
 //    dim3 nThreads(1,16,16);
 //    dim3 nBlocks(((nLowerModules * MAX_CONNECTED_MODULES)  % nThreads.x == 0 ? (nLowerModules * MAX_CONNECTED_MODULES)/nThreads.x : (nLowerModules * MAX_CONNECTED_MODULES)/nThreads.x + 1),(N_MAX_MD_PER_MODULES % nThreads.y == 0 ? N_MAX_MD_PER_MODULES/nThreads.y : N_MAX_MD_PER_MODULES/nThreads.y + 1), (N_MAX_MD_PER_MODULES % nThreads.z == 0 ? N_MAX_MD_PER_MODULES/nThreads.z : N_MAX_MD_PER_MODULES/nThreads.z + 1));
 
-    unsigned int nThreads = 1;   
+    unsigned int nThreads = 1;
     unsigned int nBlocks = nLowerModules % nThreads == 0 ? nLowerModules/nThreads : nLowerModules/nThreads + 1;
 
     createSegmentsInGPU<<<nBlocks,nThreads>>>(*modulesInGPU, *hitsInGPU, *mdsInGPU, *segmentsInGPU);
@@ -203,7 +209,7 @@ void SDL::Event::createSegmentsWithModuleMap()
     cudaError_t cudaerr = cudaDeviceSynchronize();
     if(cudaerr != cudaSuccess)
     {
-        std::cout<<"sync failed with error : "<<cudaGetErrorString(cudaerr)<<std::endl;    
+        std::cout<<"sync failed with error : "<<cudaGetErrorString(cudaerr)<<std::endl;
     }
     addSegmentsToEvent();
 
@@ -233,7 +239,7 @@ void SDL::Event::createSegmentsWithModuleMap()
 
     float dz, dphi, dphichange, shiftedX, shiftedY, shiftedZ, noShiftedDz, noShiftedDphi, noShiftedDphiChange;
     bool success = runMiniDoubletDefaultAlgo(modulesInGPU, hitsInGPU, lowerModuleIndex, lowerHitArrayIndex, upperHitArrayIndex, dz, dphi, dphichange, shiftedX, shiftedY, shiftedZ, noShiftedDz, noShiftedDphi, noShiftedDphiChange);
-    
+
     if(success)
     {
         unsigned int mdModuleIndex = atomicAdd(&mdsInGPU.nMDs[lowerModuleIndex],1);
@@ -288,7 +294,7 @@ __global__ void createMiniDoubletsInGPU(struct SDL::modules& modulesInGPU, struc
 
     createMiniDoubletsFromLowerModule<<<nBlocks,nThreads>>>(modulesInGPU, hitsInGPU, mdsInGPU, lowerModuleIndex, upperModuleIndex, nLowerHits, nUpperHits);
 
-  
+
 }
 
 /*__global__ void createSegmentsInGPU(struct SDL::modules& modulesInGPU, struct SDL::hits& hitsInGPU, struct SDL::miniDoublets& mdsInGPU, struct SDL::segments& segmentsInGPU)
@@ -299,7 +305,7 @@ __global__ void createMiniDoubletsInGPU(struct SDL::modules& modulesInGPU, struc
 
     int innerLowerModuleArrayIdx = xAxisIdx/MAX_CONNECTED_MODULES;
     int outerLowerModuleArrayIdx = xAxisIdx % MAX_CONNECTED_MODULES; //need this index from the connected module array
-    
+
     unsigned int innerLowerModuleIndex = modulesInGPU.lowerModuleIndices[innerLowerModuleArrayIdx];
 
     unsigned int nConnectedModules = modulesInGPU.nConnectedModules[innerLowerModuleIndex];
@@ -388,7 +394,7 @@ __global__ void createSegmentsInGPU(struct SDL::modules& modulesInGPU, struct SD
     dim3 nThreads(1,16,16);
     dim3 nBlocks((nConnectedModules % nThreads.x == 0 ? nConnectedModules/nThreads.x : nConnectedModules/nThreads.x + 1), (nInnerMDs % nThreads.y == 0 ? nInnerMDs/nThreads.y : nInnerMDs/nThreads.y + 1), (N_MAX_MD_PER_MODULES % nThreads.z == 0 ? N_MAX_MD_PER_MODULES/nThreads.z : N_MAX_MD_PER_MODULES/nThreads.z + 1));
     createSegmentsFromInnerLowerModule<<<nBlocks,nThreads>>>(modulesInGPU, hitsInGPU, mdsInGPU, segmentsInGPU, innerLowerModuleIndex,nInnerMDs);
-   
+
 }
 
 
@@ -438,7 +444,7 @@ unsigned int SDL::Event::getNumberOfMiniDoublets()
     }
 
     return miniDoublets;
-   
+
 }
 
 unsigned int SDL::Event::getNumberOfMiniDoubletsByLayer(unsigned int layer)
@@ -446,7 +452,7 @@ unsigned int SDL::Event::getNumberOfMiniDoubletsByLayer(unsigned int layer)
      if(layer == 6)
         return n_minidoublets_by_layer_barrel_[layer];
     else
-        return n_minidoublets_by_layer_barrel_[layer] + n_minidoublets_by_layer_endcap_[layer];   
+        return n_minidoublets_by_layer_barrel_[layer] + n_minidoublets_by_layer_endcap_[layer];
 }
 
 unsigned int SDL::Event::getNumberOfMiniDoubletsByLayerBarrel(unsigned int layer)
@@ -472,7 +478,7 @@ unsigned int SDL::Event::getNumberOfSegments()
     }
 
     return segments;
-   
+
 }
 
 unsigned int SDL::Event::getNumberOfSegmentsByLayer(unsigned int layer)
@@ -480,7 +486,7 @@ unsigned int SDL::Event::getNumberOfSegmentsByLayer(unsigned int layer)
      if(layer == 6)
         return n_segments_by_layer_barrel_[layer];
     else
-        return n_segments_by_layer_barrel_[layer] + n_segments_by_layer_endcap_[layer];   
+        return n_segments_by_layer_barrel_[layer] + n_segments_by_layer_endcap_[layer];
 }
 
 unsigned int SDL::Event::getNumberOfSegmentsByLayerBarrel(unsigned int layer)
